@@ -2,13 +2,68 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import feedparser
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import urllib.parse
+import uuid
+import json
+import os
 
 # 1. 페이지 설정
-st.set_page_config(page_title="Global Macro Master v16.0", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Global Macro Master v18.0", layout="wide", initial_sidebar_state="expanded")
 
-# 2. 통합 섹터 데이터베이스 (관련 상장사 밸류체인 최대 12개 초확장)
+# --- 방문자 영구 추적 로직 (JSON 파일 저장 방식) ---
+VISITOR_FILE = "visitor_stats.json"
+
+def load_visitor_data():
+    if os.path.exists(VISITOR_FILE):
+        with open(VISITOR_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_visitor_data(data):
+    with open(VISITOR_FILE, "w") as f:
+        json.dump(data, f)
+
+# 현재 동시 접속자(활성 사용자)는 메모리에서만 관리
+@st.cache_resource
+def get_active_users():
+    return {}
+
+active_users = get_active_users()
+
+# 사용자 고유 세션 ID 발급 및 방문자 카운트 누적
+if 'session_id' not in st.session_state:
+    st.session_state['session_id'] = str(uuid.uuid4())
+    today_str = str(date.today())
+    
+    # 파일에서 기존 데이터 불러오기
+    stats = load_visitor_data()
+    
+    # 오늘 날짜 방문자 1 증가
+    stats[today_str] = stats.get(today_str, 0) + 1
+    
+    # 파일에 다시 저장
+    save_visitor_data(stats)
+
+# 현재 사용자의 마지막 활동 시간 업데이트
+active_users[st.session_state['session_id']] = datetime.now()
+
+# 5분 이상 활동이 없는 사용자는 '지금 접속자'에서 제외
+current_time = datetime.now()
+active_sessions = 0
+for sid, last_seen in list(active_users.items()):
+    if (current_time - last_seen).total_seconds() > 300: # 300초 = 5분
+        del active_users[sid]
+    else:
+        active_sessions += 1
+
+# 통계 표시를 위해 데이터 불러오기
+current_stats = load_visitor_data()
+today_visitors = current_stats.get(str(date.today()), 0)
+total_visitors = sum(current_stats.values())
+# ------------------------------------------
+
+# 2. 통합 섹터 데이터베이스
 SECTOR_DB = {
     # --- 에너지 ---
     "원유": {"query": '("원유" OR "국제유가" OR "WTI" OR "crude oil") (가동중단 OR 감산 OR OPEC OR 재고)', "keywords": ["원유", "유가", "석유"], "companies": ["SK이노베이션", "S-Oil", "GS", "흥구석유", "중앙에너비스", "극동유화", "한국쉘석유", "미창석유", "대성산업", "지에스이", "대성에너지", "SH에너지화학"]},
@@ -68,8 +123,17 @@ time_frame_days = PERIOD_DAYS[time_frame_label]
 
 st.sidebar.divider()
 
-menu_options = ["🏠 대시보드 홈 (전체)"] + list(SECTOR_DB.keys())
+# 메뉴에 '통계' 탭 추가
+menu_options = ["🏠 대시보드 홈 (전체)", "📊 접속자 통계 (트래픽)"] + list(SECTOR_DB.keys())
 selected_menu = st.sidebar.radio("📌 집중 분석 섹터 선택", menu_options)
+
+# 사이드바 하단 트래픽 모니터 (JSON 데이터 연동)
+st.sidebar.divider()
+st.sidebar.subheader("📡 실시간 트래픽 모니터")
+col1, col2 = st.sidebar.columns(2)
+col1.metric("지금 접속자", f"{active_sessions} 명")
+col2.metric("금일 접속자", f"{today_visitors} 명")
+st.sidebar.caption(f"누적 총 접속자: {total_visitors} 명")
 
 # 4. 핵심 스크랩 및 분석 로직
 def analyze_news(title):
@@ -134,7 +198,6 @@ def highlight_row(row):
     elif row['중요도'] == '📉': return ['background-color: rgba(100, 150, 255, 0.15)'] * len(row)
     return [''] * len(row)
 
-# 이동평균선(MA) 계산 함수
 def add_moving_averages(data, days):
     try:
         if isinstance(data.columns, pd.MultiIndex):
@@ -157,7 +220,6 @@ def add_moving_averages(data, days):
             short_ma, long_ma = 10, 40 
             label = "주선"
             
-        # min_periods=1 을 추가하여 데이터가 부족해도 가능한 범위 내에서 선을 그리도록 방어
         chart_df[f'{short_ma}{label}'] = chart_df['종가'].rolling(window=short_ma, min_periods=1).mean()
         chart_df[f'{long_ma}{label}'] = chart_df['종가'].rolling(window=long_ma, min_periods=1).mean()
         return chart_df
@@ -166,18 +228,14 @@ def add_moving_averages(data, days):
             return pd.DataFrame({'종가': data['Close'].iloc[:, 0]})
         return pd.DataFrame({'종가': data['Close']})
 
-# ⭐️ 데이터 공백 방어를 위한 스마트 날짜 설정 ⭐️
-# 선택한 기간보다 무조건 300일 이전 데이터부터 넉넉히 불러와서 MA를 안전하게 계산
 padded_days = time_frame_days + 300 
 padded_start_date = (datetime.now() - timedelta(days=padded_days)).strftime('%Y-%m-%d')
-
-# 화면에 보여줄 실제 목표 시작 날짜 (이 날짜 이후 데이터만 슬라이싱)
 target_start_date = pd.to_datetime((datetime.now() - timedelta(days=time_frame_days)).strftime('%Y-%m-%d'))
 chart_interval = "1wk" if time_frame_days >= 1095 else "1d"
 
 # 5. 메인 화면 렌더링 로직
 if selected_menu == "🏠 대시보드 홈 (전체)":
-    st.title("🌐 Global Macro Master v16.0")
+    st.title("🌐 Global Macro Master v18.0")
     st.caption(f"선택된 분석 기간: {time_frame_label} | 전체 원자재 섹터 오버뷰 및 추세선")
 
     chart_groups = {
@@ -192,27 +250,19 @@ if selected_menu == "🏠 대시보드 홈 (전체)":
         for i, (name, ticker) in enumerate(commodities.items()):
             with cols[i]:
                 try:
-                    # 넉넉한 기간으로 데이터 다운로드
                     data = yf.download(ticker, start=padded_start_date, interval=chart_interval, progress=False)
                     if not data.empty:
-                        # 전체 데이터에 대한 이동평균선 계산
                         chart_data_full = add_moving_averages(data, time_frame_days)
-                        
-                        # 야후 파이낸스 타임존을 무시하고 날짜 슬라이싱 처리
                         chart_data_full.index = chart_data_full.index.tz_localize(None)
                         chart_data = chart_data_full[chart_data_full.index >= target_start_date]
                         
-                        # 현재 가격은 어떤 경우든 가장 최근 데이터를 기준으로 함
                         curr = float(chart_data_full['종가'].iloc[-1])
-                        
-                        # 슬라이싱 된 데이터가 있다면(최근 거래 있음) 그 안에서 등락률 계산
                         if not chart_data.empty:
                             prev = float(chart_data['종가'].iloc[0])
                             change_pct = ((curr - prev) / prev) * 100
                             st.metric(name, f"${curr:.2f}", f"{change_pct:.2f}%")
                             st.line_chart(chart_data, height=120)
                         else:
-                            # 최근 거래가 없다면 0% 표기 후, 마지막으로 거래되었던 최근 5일치 차트만 표기
                             st.metric(name, f"${curr:.2f}", "0.00%")
                             st.line_chart(chart_data_full.tail(5), height=120)
                     else:
@@ -237,6 +287,53 @@ if selected_menu == "🏠 대시보드 홈 (전체)":
                     use_container_width=True, height=600, hide_index=True
                 )
 
+# --- 신규 추가: 접속자 통계 페이지 ---
+elif selected_menu == "📊 접속자 통계 (트래픽)":
+    st.title("📊 대시보드 접속자 통계")
+    st.caption("스터디 팀원들의 웹 대시보드 접속 현황을 일간, 주간, 월간 단위로 분석합니다.")
+    
+    stats_data = load_visitor_data()
+    
+    if not stats_data:
+        st.info("아직 누적된 방문자 데이터가 충분하지 않습니다. (오늘부터 기록이 시작됩니다)")
+    else:
+        # JSON 데이터를 Pandas DataFrame으로 변환
+        df_stats = pd.DataFrame(list(stats_data.items()), columns=['날짜', '접속자 수'])
+        df_stats['날짜'] = pd.to_datetime(df_stats['날짜'])
+        df_stats = df_stats.set_index('날짜').sort_index()
+        
+        # 상단 요약 지표
+        st.markdown("### 📈 트래픽 요약")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("총 누적 접속자", f"{int(df_stats['접속자 수'].sum())} 명")
+        c2.metric("일일 최고 접속자", f"{int(df_stats['접속자 수'].max())} 명")
+        c3.metric("평균 일일 접속자", f"{int(df_stats['접속자 수'].mean())} 명")
+        st.divider()
+        
+        # 보기 단위 선택 라디오 버튼
+        view_type = st.radio("보기 단위 선택", ["일간 (Daily)", "주간 (Weekly)", "월간 (Monthly)"], horizontal=True)
+        
+        # 선택한 단위에 맞춰 Pandas resample(데이터 그룹화) 실행
+        if view_type == "일간 (Daily)":
+            chart_data = df_stats
+            st.markdown("##### 📅 일간 접속자 추이")
+        elif view_type == "주간 (Weekly)":
+            chart_data = df_stats.resample('W').sum()
+            chart_data.index = chart_data.index.strftime('%Y년 %U주차')
+            st.markdown("##### 주간 접속자 추이")
+        else:
+            chart_data = df_stats.resample('ME').sum()
+            chart_data.index = chart_data.index.strftime('%Y년 %m월')
+            st.markdown("##### 🗓️ 월간 접속자 추이")
+            
+        # 막대 그래프 렌더링
+        st.bar_chart(chart_data['접속자 수'], height=400)
+        
+        # 데이터프레임 표 형태로도 제공
+        with st.expander("📊 상세 데이터 표 보기"):
+            st.dataframe(chart_data, use_container_width=True)
+
+# ------------------------------------
 else:
     st.title(f"🔍 {selected_menu} 심층 분석")
     st.caption(f"선택된 분석 기간: {time_frame_label} | 좌측 메뉴에서 다른 원자재를 선택하거나 홈으로 돌아갈 수 있습니다.")
@@ -244,7 +341,6 @@ else:
     ticker = TICKER_MAP.get(selected_menu)
     if ticker:
         try:
-            # 넉넉한 기간으로 데이터 다운로드
             data = yf.download(ticker, start=padded_start_date, interval=chart_interval, progress=False)
             if not data.empty:
                 chart_data_full = add_moving_averages(data, time_frame_days)
