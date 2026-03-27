@@ -9,7 +9,7 @@ import json
 import os
 
 # 1. 페이지 설정
-st.set_page_config(page_title="Global Macro Master v18.0", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Global Macro Master v18.1", layout="wide", initial_sidebar_state="expanded")
 
 # --- 방문자 영구 추적 로직 (JSON 파일 저장 방식) ---
 VISITOR_FILE = "visitor_stats.json"
@@ -123,8 +123,8 @@ time_frame_days = PERIOD_DAYS[time_frame_label]
 
 st.sidebar.divider()
 
-# 메뉴에 '통계' 탭 추가
-menu_options = ["🏠 대시보드 홈 (전체)", "📊 접속자 통계 (트래픽)"] + list(SECTOR_DB.keys())
+# 접속자 통계 항목을 맨 끝으로 이동
+menu_options = ["🏠 대시보드 홈 (전체)"] + list(SECTOR_DB.keys()) + ["📊 접속자 통계 (트래픽)"]
 selected_menu = st.sidebar.radio("📌 집중 분석 섹터 선택", menu_options)
 
 # 사이드바 하단 트래픽 모니터 (JSON 데이터 연동)
@@ -235,7 +235,7 @@ chart_interval = "1wk" if time_frame_days >= 1095 else "1d"
 
 # 5. 메인 화면 렌더링 로직
 if selected_menu == "🏠 대시보드 홈 (전체)":
-    st.title("🌐 Global Macro Master v18.0")
+    st.title("🌐 Global Macro Master v18.1")
     st.caption(f"선택된 분석 기간: {time_frame_label} | 전체 원자재 섹터 오버뷰 및 추세선")
 
     chart_groups = {
@@ -287,10 +287,10 @@ if selected_menu == "🏠 대시보드 홈 (전체)":
                     use_container_width=True, height=600, hide_index=True
                 )
 
-# --- 신규 추가: 접속자 통계 페이지 ---
+# --- 접속자 통계 페이지 ---
 elif selected_menu == "📊 접속자 통계 (트래픽)":
     st.title("📊 대시보드 접속자 통계")
-    st.caption("스터디 팀원들의 웹 대시보드 접속 현황을 일간, 주간, 월간 단위로 분석합니다.")
+    st.caption("대시보드 접속 현황을 일간, 주간, 월간 단위로 분석합니다.")
     
     stats_data = load_visitor_data()
     
